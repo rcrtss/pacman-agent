@@ -13,13 +13,15 @@ from contest.capture_agents import CaptureAgent
 from contest.game import Directions
 from contest.util import nearest_point
 
+import time
+
 
 #################
 # Team creation #
 #################
 
 def create_team(first_index, second_index, is_red,
-                first='OffensiveReflexAgent', second='DefensiveReflexAgent', num_training=0):
+                first='OffensiveCustomAgent', second='DefensiveReflexAgent', num_training=0):
     """
     This function should return a list of two agents that will form the
     team, initialized using firstIndex and secondIndex as their agent
@@ -180,4 +182,212 @@ class DefensiveReflexAgent(ReflexCaptureAgent):
         return features
 
     def get_weights(self, game_state, action):
+        return {'num_invaders': -1000, 'on_defense': 100, 'invader_distance': -10, 'stop': -100, 'reverse': -2}
+
+
+##################################################################################
+################## MY AGENTS #####################################################
+##################################################################################
+
+
+class OffensiveCustomAgent(ReflexCaptureAgent):
+    """
+    A reflex agent focused on offensive strategy that also defends if needed.
+    """
+    
+    def choose_action(self, game_state):
+        """
+        Picks best action based on strategy.
+        """
+        ######################################################################
+        #####                   Parameters                               #####
+        ######################################################################
+        # If we are carrying more than this amount of food, we should head back to the start
+        self.MAX_FOOD_CARRY_LIMIT = 5
+        # If the sum of opponents' score and food they are carrying is greater than this, we should NOT go on offense
+        self.ENEMY_SCORE_WARNING_LEVEL = 10
+        # If there are only this many pieces of food left, we should head back to the start  
+        self.FOOD_RETRIEVAL_LIMIT = 2
+        # How many steps of lookahead to perform when on offense
+        self.OFFENSIVE_LOOKAHEAD_DEPTH = 2
+        ######################################################################
+        
+        actions = game_state.get_legal_actions(self.index)
+        agent_info = game_state.get_agent_state(self.index)
+        
+        # Choose strategy depending on the current game state
+        self.aggressive_play_mode = self._should_offense(game_state)
+
+        # You can profile your evaluation time by uncommenting these lines
+        start = time.time()
+        best_actions = self.offensive_action(game_state, actions) if self.aggressive_play_mode else self.defensive_action(game_state, actions)            
+        print('eval time for agent %d: %.4f' % (self.index, time.time() - start))
+
+        # Endgame override: choose the action that brings our agent closest to the starting position
+        food_left = len(self.get_food(game_state).as_list())
+        
+        # Win strategy
+        head_back = food_left <= self.FOOD_RETRIEVAL_LIMIT or (agent_info.is_pacman and agent_info.num_carrying > self.MAX_FOOD_CARRY_LIMIT)
+        if head_back:
+            return self.head_back_strategy(game_state, actions)
+
+        return random.choice(best_actions)
+    
+    ########################################################################
+    
+    def _should_offense(self, game_state):
+        """
+        Decide whether or not to set offensive strategy (switch strategy)
+        Returns True if we should offense, False if we should defense
+        """
+        # Our agent should offense only if:
+        # 1) Both opponents are NOT pacman at the same time, AND
+        # 2) The sum of opponents' returned + carrying food is NOT greater than ENEMY_SCORE_WARNING_LEVEL, AND
+        # 3) We are NOT currently carrying a lot of food (i.e. more than MAX_FOOD_CARRY_LIMIT)
+        opponents = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)]
+        both_opps_pacman = all(opp.is_pacman for opp in opponents)
+        opponent_score = sum(opp.num_carrying + opp.num_returned for opp in opponents)
+        my_state = game_state.get_agent_state(self.index)
+        
+        if not both_opps_pacman and not opponent_score > self.ENEMY_SCORE_WARNING_LEVEL and my_state.num_carrying <= self.MAX_FOOD_CARRY_LIMIT:
+            return True
+        
+        return False
+            
+    def defensive_action(self, game_state, actions):
+        """
+        Returns the best defensive action according to reflex evaluation.
+        """
+        values = [self.evaluate(game_state, a) for a in actions]
+        max_value = max(values)
+        best_actions = [a for a, v in zip(actions, values) if v == max_value]
+        return best_actions
+
+    def offensive_action(self, game_state, actions):
+        """
+        Returns the best offensive action according to lookahead evaluation.
+        """
+        best_value = float('-inf')
+        best_actions = []
+        for action in actions:
+            val = self._recursive_lookahead(game_state, action, self.OFFENSIVE_LOOKAHEAD_DEPTH)
+            if val > best_value:
+                best_value = val
+                best_actions = [action]
+            elif val == best_value:
+                best_actions.append(action)
+        return best_actions
+
+    def _recursive_lookahead(self, game_state, action, depth):
+        """
+        Recursively evaluates actions up to `depth` levels deep.
+        At depth 1, returns the direct evaluation.
+        At depth > 1, returns the best evaluation reachable from the successor.
+        """
+        if depth <= 1:
+            return self.evaluate(game_state, action)
+        successor = self.get_successor(game_state, action)
+        next_actions = successor.get_legal_actions(self.index)
+        return max(self._recursive_lookahead(successor, a, depth - 1) for a in next_actions)
+
+    def get_features(self, game_state, action):
+        """If we're a pacman, use offensive features. If we're a ghost, use defensive features."""
+        successor = self.get_successor(game_state, action)
+        my_state = successor.get_agent_state(self.index)
+        if self.aggressive_play_mode:
+            return self.get_features_off(game_state, action)
+        else:
+            return self.get_features_def(game_state, action)
+    
+    def get_weights(self, game_state, action):
+        """If we're a pacman, use offensive weights. If we're a ghost, use defensive weights."""
+        successor = self.get_successor(game_state, action)
+        my_state = successor.get_agent_state(self.index)
+        if self.aggressive_play_mode:
+            return self.get_weights_off(game_state, action)
+        else:
+            return self.get_weights_def(game_state, action)
+        
+    def head_back_strategy(self, game_state, actions):
+        """
+        When we're in endgame mode, we want to head back to the start position to secure our points. 
+        This function implements that strategy by choosing the action that brings us closest to the starting position."
+        """
+        best_dist = 9999
+        best_action = None
+        for action in actions:
+            successor = self.get_successor(game_state, action)
+            pos2 = successor.get_agent_position(self.index)
+            dist = self.get_maze_distance(self.start, pos2)
+            if dist < best_dist:
+                best_action = action
+                best_dist = dist
+        return best_action
+        
+    ########################################################################
+    ##### OFFENSIVE FUNCTIONS FOR OFFENSIVE AGENT ##########################
+    ########################################################################
+
+    def get_features_off(self, game_state, action):
+        features = util.Counter()
+        successor = self.get_successor(game_state, action)
+        food_list = self.get_food(successor).as_list()
+        features['successor_score'] = -len(food_list)  # self.getScore(successor)
+
+        # Compute distance to the nearest food
+        if len(food_list) > 0:  # This should always be True,  but better safe than sorry
+            my_pos = successor.get_agent_state(self.index).get_position()
+            min_distance = min([self.get_maze_distance(my_pos, food) for food in food_list])
+            features['distance_to_food'] = min_distance
+        
+        # Compute distance to power pill
+        power_pills = self.get_capsules(successor)
+        if len(power_pills) > 0:
+            my_pos = successor.get_agent_state(self.index).get_position()
+            min_distance = min([self.get_maze_distance(my_pos, power) for power in power_pills])
+            features['distance_to_power'] = min_distance
+        
+        # Compute distance to ghosts
+        enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
+        ghosts = [a for a in enemies if not a.is_pacman and a.scared_timer == 0 and a.get_position() is not None]
+        if len(ghosts) > 0:
+            dists = [self.get_maze_distance(my_pos, a.get_position()) for a in ghosts]
+            features['distance_to_ghost'] = min(dists)
+
+        return features
+
+    def get_weights_off(self, game_state, action):
+        return {'successor_score': 100, 'distance_to_food': -1, 'distance_to_ghost': 100, 'distance_to_power': -10}
+    
+    
+    #######################################################################
+    ##### DEFENSIVE FALLBACK FUNCTIONS FOR OFFENSIVE AGENT ################
+    #######################################################################
+    
+    def get_features_def(self, game_state, action):
+        features = util.Counter()
+        successor = self.get_successor(game_state, action)
+
+        my_state = successor.get_agent_state(self.index)
+        my_pos = my_state.get_position()
+
+        # Computes whether we're on defense (1) or offense (0)
+        features['on_defense'] = 1
+        if self.aggressive_play_mode: features['on_defense'] = 0
+
+        # Computes distance to invaders we can see
+        enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
+        invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
+        features['num_invaders'] = len(invaders)
+        if len(invaders) > 0:
+            dists = [self.get_maze_distance(my_pos, a.get_position()) for a in invaders]
+            features['invader_distance'] = min(dists)
+
+        if action == Directions.STOP: features['stop'] = 1
+        rev = Directions.REVERSE[game_state.get_agent_state(self.index).configuration.direction]
+        if action == rev: features['reverse'] = 1
+
+        return features
+
+    def get_weights_def(self, game_state, action):
         return {'num_invaders': -1000, 'on_defense': 100, 'invader_distance': -10, 'stop': -100, 'reverse': -2}
