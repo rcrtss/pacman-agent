@@ -56,124 +56,6 @@ class ReflexCaptureAgent(CaptureAgent):
     def register_initial_state(self, game_state):
         self.start = game_state.get_agent_position(self.index)
         CaptureAgent.register_initial_state(self, game_state)
-        
-        # Precompute dead-end map for the FULL map (both sides).
-        # dead_end_entrance[cell] -> the entrance cell that seals that dead end.
-        # Available to all agents: defensive uses it to trap invaders,
-        # offensive uses it to decide when to escape a dead end.
-        
-        # time_start = time.time()
-        self.dead_end_depth    = self._compute_dead_end_depth(game_state)
-        self.dead_end_entrance = self._compute_dead_end_entrances(self.dead_end_depth, game_state)
-        # print('Dead-end precomputation time for agent %d: %.4f' % (self.index, time.time() - time_start))
-        
-    # ------------------------------------------------------------------ #
-    # Dead-end precomputation (runs once at game start)                   #
-    # ------------------------------------------------------------------ #
-    def _compute_dead_end_depth(self, game_state):
-        """
-        Assigns a dead-end depth to every cell in the maze using iterative
-        tip-peeling (topological leaf removal).
-
-        A 'tip' is a non-wall cell with exactly one open neighbor.
-        We peel tips in waves and assign a peel order to each cell.
-        After peeling, we invert so that:
-          - The innermost tip (true dead end) has the HIGHEST depth value.
-          - Cells closer to the junction entrance have lower values.
-          - Junctions and open cells are absent (implicit depth 0).
-
-        This makes dead_end_depth directly usable as a risk score:
-        higher value = deeper inside a dead end = more dangerous.
-
-        Returns: dict {cell: depth} for all dead-end cells (depth >= 1).
-        """
-        walls  = game_state.get_walls()
-        width  = game_state.data.layout.width
-        height = game_state.data.layout.height
-
-        all_cells = {
-            (x, y)
-            for x in range(width)
-            for y in range(height)
-            if not walls[x][y]
-        }
-
-        # Mutable neighbor sets — we remove cells as we peel them
-        open_neighbors = {
-            cell: {
-                (cell[0] + dx, cell[1] + dy)
-                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                if (cell[0] + dx, cell[1] + dy) in all_cells
-            }
-            for cell in all_cells
-        }
-
-        peel_order = {}   # cell -> wave number it was peeled (1 = first peeled = entrance-side)
-        current_wave = 1
-        tips = [cell for cell in all_cells if len(open_neighbors[cell]) == 1]
-
-        while tips:
-            next_tips = []
-            for tip in tips:
-                if len(open_neighbors[tip]) != 1:
-                    continue                          # already promoted or processed
-                peel_order[tip] = current_wave
-                (neighbor,) = open_neighbors[tip]    # exactly one neighbor
-                open_neighbors[neighbor].discard(tip)
-                open_neighbors[tip] = set()
-                if len(open_neighbors[neighbor]) == 1:
-                    next_tips.append(neighbor)
-            tips = next_tips
-            current_wave += 1
-
-        # Invert: tip (last peeled) gets the highest value, entrance-side gets 1
-        max_wave = current_wave - 1
-        depth = {cell: max_wave - wave + 1 for cell, wave in peel_order.items()}
-
-        return depth
-
-    def _compute_dead_end_entrances(self, dead_end_depth, game_state):
-        """
-        Derives the entrance map from the depth map.
-
-        For each dead-end cell, its entrance is the first cell outside the
-        dead-end region (depth 0) reachable by walking outward.
-
-        With the new convention (tip = highest depth, entrance-side = 1),
-        walking *outward* means stepping to the neighbor with the LOWEST
-        depth at each step — until we reach a neighbor not in dead_end_depth
-        (depth 0), which is the entrance junction.
-
-        Returns: dict {cell: entrance_cell} for all dead-end cells.
-        """
-        walls  = game_state.get_walls()
-        width  = game_state.data.layout.width
-        height = game_state.data.layout.height
-
-        def open_neighbors_of(pos):
-            x, y = pos
-            return [
-                (x + dx, y + dy)
-                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                if 0 <= x + dx < width and 0 <= y + dy < height
-                and not walls[x + dx][y + dy]
-            ]
-
-        entrance = {}
-        for cell in dead_end_depth:
-            current = cell
-            while current in dead_end_depth:
-                neighbors = open_neighbors_of(current)
-                # Prefer a neighbor already outside the dead end (depth 0)
-                exits = [nb for nb in neighbors if nb not in dead_end_depth]
-                if exits:
-                    current = exits[0]
-                    break
-                # Otherwise step outward: toward lower depth (toward the entrance)
-                current = min(neighbors, key=lambda nb: dead_end_depth.get(nb, float('inf')))
-            entrance[cell] = current
-
-        return entrance
 
     def choose_action(self, game_state):
         """
@@ -342,7 +224,7 @@ class OffensiveCustomAgent(ReflexCaptureAgent):
 
         # Head back home if endgame mode, carrying too much food, etc.
         if self._should_head_back(game_state):
-            return self._head_back_strategy(game_state, actions)
+            return self.head_back_strategy(game_state, actions)
 
         return random.choice(best_actions)
     
@@ -427,20 +309,20 @@ class OffensiveCustomAgent(ReflexCaptureAgent):
         successor = self.get_successor(game_state, action)
         my_state = successor.get_agent_state(self.index)
         if self.aggressive_play_mode:
-            return self._get_features_off(game_state, action)
+            return self.get_features_off(game_state, action)
         else:
-            return self._get_features_def(game_state, action)
+            return self.get_features_def(game_state, action)
     
     def get_weights(self, game_state, action):
         """If we're a pacman, use offensive weights. If we're a ghost, use defensive weights."""
         successor = self.get_successor(game_state, action)
         my_state = successor.get_agent_state(self.index)
         if self.aggressive_play_mode:
-            return self._get_weights_off(game_state, action)
+            return self.get_weights_off(game_state, action)
         else:
-            return self._get_weights_def(game_state, action)
+            return self.get_weights_def(game_state, action)
         
-    def _head_back_strategy(self, game_state, actions):
+    def head_back_strategy(self, game_state, actions):
         """
         When we're in endgame mode, we want to head back to the start position to secure our points. 
         This function implements that strategy by choosing the action that brings us closest to the starting position."
@@ -460,7 +342,7 @@ class OffensiveCustomAgent(ReflexCaptureAgent):
     ##### OFFENSIVE FUNCTIONS FOR OFFENSIVE AGENT ##########################
     ########################################################################
 
-    def _get_features_off(self, game_state, action):
+    def get_features_off(self, game_state, action):
         features = util.Counter()
         successor = self.get_successor(game_state, action)
         successor_self_state = successor.get_agent_state(self.index)
@@ -486,32 +368,18 @@ class OffensiveCustomAgent(ReflexCaptureAgent):
         if len(ghosts) > 0:
             dists = [self.get_maze_distance(my_pos, a.get_position()) for a in ghosts]
             features['distance_to_ghost'] = min(dists)
-            
-        # If in danger zone (dead end), heavily penalize
-        if successor_self_state.is_pacman:
-            dead_end_risk = self.dead_end_depth.get(successor_self_state.get_position(), 0)
-            
-            if features['distance_to_ghost'] > 0:
-                proximity_value = features['distance_to_ghost']
-            else:
-                # proximity proxy is the mean of noisy values
-                noisy_distances = game_state.get_agent_distances()
-                proximity_value = 5 + sum(noisy_distances) / len(noisy_distances) if noisy_distances else 0
-            
-            features['danger_zone'] = dead_end_risk / proximity_value
 
         return features
 
-    def _get_weights_off(self, game_state, action):
-        return {'successor_score': 100, 'distance_to_food': -5, 'distance_to_ghost': 100, 'distance_to_power': -10,
-                'danger_zone': -10}
+    def get_weights_off(self, game_state, action):
+        return {'successor_score': 100, 'distance_to_food': -5, 'distance_to_ghost': 100, 'distance_to_power': -10}
     
     
     #######################################################################
     ##### DEFENSIVE FALLBACK FUNCTIONS FOR OFFENSIVE AGENT ################
     #######################################################################
     
-    def _get_features_def(self, game_state, action):
+    def get_features_def(self, game_state, action):
         features = util.Counter()
         successor = self.get_successor(game_state, action)
 
@@ -535,7 +403,7 @@ class OffensiveCustomAgent(ReflexCaptureAgent):
 
         return features
 
-    def _get_weights_def(self, game_state, action):
+    def get_weights_def(self, game_state, action):
         return {'num_invaders': -1000, 'on_defense': 100, 'invader_distance': -10, 'stop': -100, 'reverse': -2}
 
 ##################################################################################
@@ -564,11 +432,6 @@ class DefensiveCustomAgent(ReflexCaptureAgent):
         Picks among the actions with the highest Q(s,a).
         """
         actions = game_state.get_legal_actions(self.index)
-        
-        # TRAP OVERRIDE
-        trap_action = self._trap_override(game_state, actions)
-        if trap_action is not None:
-            return trap_action
 
         # You can profile your evaluation time by uncommenting these lines
         start = time.time()
@@ -718,63 +581,3 @@ class DefensiveCustomAgent(ReflexCaptureAgent):
             eatenFood = list(set(previous_food) - set(current_food))
 
         return eatenFood
-
-    def _trap_override(self, game_state, actions):
-        """
-        Returns the action to block the dead-end entrance if all conditions
-        hold, otherwise returns None so normal evaluation proceeds.
-
-        Conditions (all checked cheaply with no BFS at runtime):
-          1. I am a ghost (not pacman) and not scared.
-          2. There is at least one observable invader (pacman) on my side.
-          3. The closest invader's cell is in self.dead_end_entrance (O(1) lookup).
-
-        If all conditions hold:
-          - If I am already at the entrance -> STOP (hold the block).
-          - Otherwise -> move towards the entrance.
-        """
-        my_state = game_state.get_agent_state(self.index)
-
-        # Condition 1: I must be a ghost and not scared
-        if my_state.is_pacman:
-            return None
-        if my_state.scared_timer > 0:
-            return None
-
-        my_pos = my_state.get_position()
-
-        # Condition 2: At least one observable invader on my side
-        enemies = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)]
-        invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
-        if not invaders:
-            return None
-
-        # Pick the closest invader to act on
-        invader = min(invaders, key=lambda a: self.get_maze_distance(my_pos, a.get_position()))
-        invader_pos = invader.get_position()
-
-        # Condition 3: O(1) dead-end lookup (no BFS at runtime)
-        entrance = self.dead_end_entrance.get(invader_pos)
-        if entrance is None:
-            return None
-
-        # --- All conditions met: execute trap blocking ---
-
-        # If already at the entrance, stay put to hold the block
-        if my_pos == entrance:
-            return Directions.STOP
-
-        # Otherwise move towards the entrance
-        best_action = None
-        best_dist   = float('inf')
-        for action in actions:
-            if action == Directions.STOP:
-                continue
-            successor = self.get_successor(game_state, action)
-            pos2      = successor.get_agent_state(self.index).get_position()
-            dist      = self.get_maze_distance(pos2, entrance)
-            if dist < best_dist:
-                best_dist   = dist
-                best_action = action
-
-        return best_action
