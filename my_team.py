@@ -466,6 +466,8 @@ class OffensiveCustomAgent(ReflexCaptureAgent):
         successor_self_state = successor.get_agent_state(self.index)
         food_list = self.get_food(successor).as_list()
         features['successor_score'] = -len(food_list)  # self.getScore(successor)
+        power_pills = self.get_capsules(successor)
+        features['power_pill_eated'] = -len(power_pills)
 
         # Compute distance to the nearest food
         if len(food_list) > 0:  # This should always be True,  but better safe than sorry
@@ -503,7 +505,7 @@ class OffensiveCustomAgent(ReflexCaptureAgent):
         return features
 
     def _get_weights_off(self, game_state, action):
-        return {'successor_score': 100, 'distance_to_food': -5, 'distance_to_ghost': 100, 'distance_to_power': -10,
+        return {'successor_score': 100, 'power_pill_eated': 150, 'distance_to_food': -5, 'distance_to_ghost': 100, 'distance_to_power': -10,
                 'danger_zone': -10}
     
     
