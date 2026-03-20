@@ -430,14 +430,21 @@ class OffensiveCustomAgent(ReflexCaptureAgent):
         if food_list:
             features['distance_to_food'] = min(self.get_maze_distance(my_pos, f) for f in food_list)
 
-        if capsules:
-            features['distance_to_capsule'] = min(self.get_maze_distance(my_pos, c) for c in capsules)
-
         enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
 
         # Dangerous ghosts — only penalise when they're actually threatening (≤8 steps)
         ghosts = [a for a in enemies
                   if not a.is_pacman and a.scared_timer == 0 and a.get_position() is not None]
+        
+        # Scared ghosts — free points, chase them
+        scared = [a for a in enemies if not a.is_pacman and a.scared_timer > 0 and a.get_position() is not None]
+        
+        # Only pursue capsules if opponents are not scared (to neutralize threats)
+        if capsules and not scared:
+            features['distance_to_capsule'] = min(self.get_maze_distance(my_pos, c) for c in capsules)
+        else:
+            features['distance_to_capsule'] = 0
+
         if ghosts:
             dists = [self.get_maze_distance(my_pos, a.get_position()) for a in ghosts]
             min_dist = min(dists)
@@ -449,18 +456,18 @@ class OffensiveCustomAgent(ReflexCaptureAgent):
                 features['immediate_danger'] = 1
 
         # Scared ghosts — free points, chase them
-        scared = [a for a in enemies
+        scared_and_known = [a for a in enemies
                   if not a.is_pacman and a.scared_timer > 0 and a.get_position() is not None]
-        if scared:
+        if scared_and_known:
             features['scared_ghost_distance'] = min(
-                self.get_maze_distance(my_pos, a.get_position()) for a in scared
+                self.get_maze_distance(my_pos, a.get_position()) for a in scared_and_known
             )
 
-        # Encourage movement toward chosen vertical zone while in own territory (ghost on home side)
+        # Penalize being in own territory during aggressive play (should be attacking)
         if not my_state.is_pacman:
-            target_y = self._get_target_zone_y(game_state)
-            vertical_distance = abs(my_pos[1] - target_y)
-            features['zone_alignment'] = vertical_distance
+            features['in_own_territory'] = 1
+        else:
+            features['in_own_territory'] = 0
 
         # Dead-end risk: penalised more when a ghost is nearby
         if my_state.is_pacman:
@@ -491,7 +498,7 @@ class OffensiveCustomAgent(ReflexCaptureAgent):
             'dead_end_depth':         -8,
             'danger_zone':          -200,
             'return_urgency':         -3,
-            'zone_alignment':         -100,
+            'in_own_territory':      -500,
         }
 
     # ------------------------------------------------------------------
