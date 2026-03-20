@@ -21,22 +21,8 @@ import time
 # Team creation #
 #################
 
-def create_team(first_index, second_index, is_red,
+def create_team(first_index, second_index, is_red, 
                 first='OffensiveCustomAgent', second='DefensiveCustomAgent', num_training=0):
-    """
-    This function should return a list of two agents that will form the
-    team, initialized using firstIndex and secondIndex as their agent
-    index numbers.  isRed is True if the red team is being created, and
-    will be False if the blue team is being created.
-
-    As a potentially helpful development aid, this function can take
-    additional string-valued keyword arguments ("first" and "second" are
-    such arguments in the case of this function), which will come from
-    the --red_opts and --blue_opts command-line arguments to capture.py.
-    For the nightly contest, however, your team will be created without
-    any extra arguments, so you should make sure that the default
-    behavior is what you want for the nightly contest.
-    """
     return [eval(first)(first_index), eval(second)(second_index)]
 
 
@@ -574,7 +560,10 @@ class DefensiveCustomAgent(ReflexCaptureAgent):
         # f. distance to boundary when no invaders to patrol the boundary
         if not invaders:
             dists = [self.get_maze_distance(my_pos, pos) for pos in self.patrol_points]
-            features['distance_to_boundary'] = median(dists)
+            try:
+                features['distance_to_boundary'] = median(dists)
+            except:
+                features['distance_to_boundary'] = 0
                 
         # g. run away from pacman if scared
         if my_state.scared_timer > 0:
